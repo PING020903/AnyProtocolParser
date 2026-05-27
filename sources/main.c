@@ -147,8 +147,8 @@ int main(void)
     // 初始化内存管理回调
     app_memCall_init(&memCalls);
     
-    // ========== 测试 1: 定长消息 ==========
-    DEBUG_PRINT("\n--- Test 1: Fixed-length message ---");
+    // ========== 测试 1: 定长消息（旧版 API）==========
+    DEBUG_PRINT("\n--- Test 1: Fixed-length message (legacy API) ---");
     test_t RAW_DATA = {
         .uuu16 = 0x4321,
         .uuu32 = 0x12348765,
@@ -162,30 +162,26 @@ int main(void)
     protocol_err_t ret = app_parse_message(&user_data, &msg_desc_fixed, pRawFixed);
     DEBUG_PRINT("Fixed parse result: %d", ret);
     
-    // ========== 测试 2: TLV 不定长消息 ==========
-    DEBUG_PRINT("\n--- Test 2: TLV variable-length message ---");
+    // ========== 测试 2: TLV 不定长消息（旧版 API）==========
+    DEBUG_PRINT("\n--- Test 2: TLV variable-length message (legacy API) ---");
     DEBUG_PRINT("TLV raw data (len=%d):", (int)sizeof(tlv_data));
     VAR_PRINT_ARR_HEX(tlv_data, sizeof(tlv_data));
     
-    // TLV 结构：typeNum(1字节) + len(1字节) + data(len字节)
-    // tlv_data: 0x0a(type) 0x08(len=8) [8字节数据]
     parsing_user_data_t user_data_tlv = {NULL, 0};
     ret = app_parse_message(&user_data_tlv, &msg_desc_var, tlv_data);
     DEBUG_PRINT("TLV parse result: %d", ret);
     
-    // ========== 测试 3: LTV 不定长消息 ==========
-    DEBUG_PRINT("\n--- Test 3: LTV variable-length message ---");
+    // ========== 测试 3: LTV 不定长消息（旧版 API）==========
+    DEBUG_PRINT("\n--- Test 3: LTV variable-length message (legacy API) ---");
     DEBUG_PRINT("LTV raw data (len=%d):", (int)sizeof(ltv_data));
     VAR_PRINT_ARR_HEX(ltv_data, sizeof(ltv_data));
     
-    // LTV 结构：len(1字节) + typeNum(1字节) + data(len字节)
-    // ltv_data: 0x0a(len=10) 0x01(type) [10字节数据...但实际只有9字节]
     parsing_user_data_t user_data_ltv = {NULL, 0};
     ret = app_parse_message(&user_data_ltv, &msg_desc_ltv, ltv_data);
     DEBUG_PRINT("LTV parse result: %d", ret);
     
-    // ========== 测试 4: 零拷贝模式 ==========
-    DEBUG_PRINT("\n--- Test 4: Zero-copy mode (no memcpy) ---");
+    // ========== 测试 4: 零拷贝模式（旧版 API）==========
+    DEBUG_PRINT("\n--- Test 4: Zero-copy mode (legacy API) ---");
     test_t RAW_DATA_ZC = {
         .uuu16 = 0xABCD,
         .uuu32 = 0xDEADBEEF,
@@ -198,8 +194,82 @@ int main(void)
     parsing_user_data_t user_data_zc = {NULL, 0};
     ret = app_parse_message(&user_data_zc, &msg_desc_zero_copy, pRawZeroCopy);
     DEBUG_PRINT("Zero-copy parse result: %d", ret);
-    DEBUG_PRINT("Note: In zero-copy mode, callbacks receive direct pointers to source buffer (no allocation/copy)");
     
+    // ========== 测试 5: 重入安全 API（无 CRC）==========
+    DEBUG_PRINT("\n--- Test 5: Reentrant API (without CRC) ---");
+    app_parser_instance_t parser1;
+    ret = app_parser_init(&parser1, &memCalls);
+    if (ret != PROTOCOL_OK)
+    {
+        DEBUG_PRINT("Parser init failed: %d", ret);
+        return -1;
+    }
+    
+    parsing_user_data_t user_data_re1 = {NULL, 0};
+    ret = app_parse_message_ex(&parser1, &user_data_re1, &msg_desc_fixed, pRawFixed);
+    DEBUG_PRINT("Reentrant parse result: %d", ret);
+    
+    app_parser_deinit(&parser1);
+    
+    // ========== 测试 6: 重入安全 API + CRC 校验（失败场景）==========
+    DEBUG_PRINT("\n--- Test 6: Reentrant API with CRC verification (failure case) ---");
+    app_parser_instance_t parser2;
+    app_parser_init(&parser2, &memCalls);
+    
+    // 配置 CRC：假设消息最后 4 字节是 CRC-32
+    app_crc_config_t crc_cfg = {
+        .calc_crc = NULL,  // 使用默认 CRC-32
+        .verify_crc = NULL,
+        .expected_crc = 0,
+        .crc_offset = 0,   // 从开头计算 CRC
+        .crc_size = 4      // CRC 占 4 字节
+    };
+    app_parser_set_crc_config(&parser2, &crc_cfg);
+    app_parser_enable_crc(&parser2, true);
+    
+    // 构造带 CRC 的测试数据（简单示例：直接在原数据后追加 4 字节伪 CRC）
+    uint8_t data_with_crc[64];  // 足够大的缓冲区
+    memcpy(data_with_crc, &RAW_DATA, sizeof(test_t));
+    // 填充伪 CRC 值（实际应用中应该计算真实 CRC）
+    data_with_crc[26] = 0x01;
+    data_with_crc[27] = 0x02;
+    data_with_crc[28] = 0x03;
+    data_with_crc[29] = 0x04;
+    
+    parsing_user_data_t user_data_crc = {NULL, 0};
+    ret = app_parse_message_ex(&parser2, &user_data_crc, &msg_desc_fixed, data_with_crc);
+    if (ret == PROTOCOL_ERR_CRC)
+    {
+        DEBUG_PRINT("CRC verification failed as expected (error code: %d = PROTOCOL_ERR_CRC)", ret);
+        DEBUG_PRINT("User can handle CRC error here (e.g., request retransmission)");
+    }
+    else
+    {
+        DEBUG_PRINT("CRC verification result: %d", ret);
+    }
+    
+    app_parser_deinit(&parser2);
+    
+    // ========== 测试 7: 多实例并发解析（演示重入安全性）==========
+    DEBUG_PRINT("\n--- Test 7: Multiple concurrent parser instances ---");
+    app_parser_instance_t parser_a, parser_b;
+    app_parser_init(&parser_a, &memCalls);
+    app_parser_init(&parser_b, &memCalls);
+    
+    // 两个解析器同时解析不同数据
+    parsing_user_data_t user_a = {NULL, 0};
+    parsing_user_data_t user_b = {NULL, 0};
+    
+    ret = app_parse_message_ex(&parser_a, &user_a, &msg_desc_fixed, pRawFixed);
+    DEBUG_PRINT("Parser A result: %d", ret);
+    
+    ret = app_parse_message_ex(&parser_b, &user_b, &msg_desc_fixed, pRawZeroCopy);
+    DEBUG_PRINT("Parser B result: %d", ret);
+    
+    app_parser_deinit(&parser_a);
+    app_parser_deinit(&parser_b);
+    
+    DEBUG_PRINT("\n=== All tests completed ===");
     return 0;
 }
 

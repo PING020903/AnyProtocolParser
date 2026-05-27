@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -160,6 +161,7 @@ extern "C"
         PROTOCOL_ERR_PASSMSG,
         PROTOCOL_ERR_CALLS_INIT,
         PROTOCOL_ERR_FUNCS,
+        PROTOCOL_ERR_CRC,      // CRC 校验失败
     } protocol_err_t;
 
     // 字段类型枚举，用于区分不同类型的字段
@@ -226,6 +228,20 @@ extern "C"
     // 字段回调函数指针类型定义
     typedef protocol_err_t (*field_callback_t)(parsing_user_data_t *_user, const parsing_raw_data_t *_raw);
 
+    // CRC 校验函数指针类型
+    typedef uint32_t (*crc_calc_callback_t)(const uint8_t *data, size_t len);
+    typedef bool (*crc_verify_callback_t)(const uint8_t *data, size_t len, uint32_t expected_crc);
+
+    // CRC 校验配置
+    typedef struct
+    {
+        crc_calc_callback_t calc_crc;         // CRC 计算函数
+        crc_verify_callback_t verify_crc;     // CRC 验证函数
+        uint32_t expected_crc;                // 期望的 CRC 值（用于验证）
+        size_t crc_offset;                    // CRC 在消息中的偏移位置
+        size_t crc_size;                      // CRC 字段大小（1/2/4 字节）
+    } app_crc_config_t;
+
     // --- 核心数据结构 ---
 
     // 前置声明
@@ -237,6 +253,17 @@ extern "C"
         field_callback_t on_parse_callback;
         field_callback_t on_serialize_callback;
     } protocol_field_calls_t;
+
+    // 解析器实例结构体（支持重入和线程安全）
+    typedef struct app_parser_instance_s
+    {
+        const parsing_memCall_t *memCalls;           // 内存管理回调
+        void *internal_data;                         // 内部数据（链表头等）
+        app_crc_config_t crc_config;                 // CRC 校验配置
+        bool crc_enabled;                            // 是否启用 CRC 校验
+        uint32_t last_error_code;                    // 最后一次错误码
+        void *user_context;                          // 用户自定义上下文（可用于 OS 互斥锁等）
+    } app_parser_instance_t;
 
     // 单个字段的描述符
     APP_PACKED_STRUCT(protocol_field_descriptor_s)
@@ -271,11 +298,30 @@ extern "C"
     static const size_t appField_tSize = sizeof(protocol_field_descriptor_t);
     static const size_t appMsg_tSize = sizeof(protocol_message_descriptor_t);
 
+    // 解析器实例管理 API
+    protocol_err_t app_parser_init(app_parser_instance_t *parser, 
+                                    const parsing_memCall_t *memCalls);
+    
+    protocol_err_t app_parser_deinit(app_parser_instance_t *parser);
+    
+    // 配置 CRC 校验
+    void app_parser_set_crc_config(app_parser_instance_t *parser, 
+                                    const app_crc_config_t *crc_config);
+    
+    void app_parser_enable_crc(app_parser_instance_t *parser, bool enable);
+
+    // 旧版 API（保持向后兼容，内部使用默认实例）
     protocol_err_t app_memCall_init(const parsing_memCall_t *memCalls);
 
     protocol_err_t app_parse_message(parsing_user_data_t *user,
                                      const protocol_message_descriptor_t *msg_desc,
                                      const uint8_t *raw_data);
+
+    // 新版重入安全 API
+    protocol_err_t app_parse_message_ex(app_parser_instance_t *parser,
+                                        parsing_user_data_t *user,
+                                        const protocol_message_descriptor_t *msg_desc,
+                                        const uint8_t *raw_data);
 
 #ifdef __cplusplus
 }
