@@ -74,6 +74,27 @@ extern "C"
     {                                                                         \
         .name = #_member,                                                     \
         .type = f_type,                                                       \
+        .flags = FIELD_FLAG_NONE,                                             \
+        .itemSize = GET_TYPE_SIZE(f_type),                                    \
+        .itemCount = (sizeof(((_type *)0)->_member) / GET_TYPE_SIZE(f_type)), \
+        .offset = offsetof(_type, _member),                                   \
+        .calls = (_calls)}
+#endif
+
+#ifndef FIELD_DESC_FIXED_WITH_FLAGS
+/*
+ * 定长字段描述符初始化宏 (带标志位)
+ * @param _type: 结构体类型名
+ * @param _member: 结构体成员名
+ * @param f_type: 字段数据类型枚举 (如 FIELD_TYPE_UINT16)
+ * @param _flags: 字段标志位 (如 FIELD_FLAG_ZERO_COPY)
+ * @param _calls: 回调函数配置指针 (protocol_field_calls_t*)，可为 NULL
+ */
+#define FIELD_DESC_FIXED_WITH_FLAGS(_type, _member, f_type, _flags, _calls)   \
+    {                                                                         \
+        .name = #_member,                                                     \
+        .type = f_type,                                                       \
+        .flags = (_flags),                                                    \
         .itemSize = GET_TYPE_SIZE(f_type),                                    \
         .itemCount = (sizeof(((_type *)0)->_member) / GET_TYPE_SIZE(f_type)), \
         .offset = offsetof(_type, _member),                                   \
@@ -93,9 +114,31 @@ extern "C"
     {                                                        \
         .name = #_member,                                    \
         .type = f_type,                                      \
+        .flags = FIELD_FLAG_NONE,                            \
         .itemSize = GET_TYPE_SIZE(f_type),                   \
         .itemCount = (mode),                                 \
         .offset = offsetof(_type, _member),                  \
+        .calls = (_calls)}
+#endif
+
+#ifndef FIELD_DESC_VAR_WITH_FLAGS
+/*
+ * 变长字段描述符初始化宏 (带标志位)
+ * @param _type: 结构体类型名
+ * @param _member: 结构体成员名
+ * @param f_type: 字段数据类型枚举 (如 FIELD_TYPE_UINT8)
+ * @param mode: 长度模式枚举 (FIELD_LEN_SYMBOL, FIELD_END_SYMBOL, FIELD_ALL_REMAINING)
+ * @param _flags: 字段标志位 (如 FIELD_FLAG_ZERO_COPY)
+ * @param _calls: 回调函数配置指针 (protocol_field_calls_t*)，可为 NULL
+ */
+#define FIELD_DESC_VAR_WITH_FLAGS(_type, _member, f_type, mode, _flags, _calls) \
+    {                                                                           \
+        .name = #_member,                                                       \
+        .type = f_type,                                                         \
+        .flags = (_flags),                                                      \
+        .itemSize = GET_TYPE_SIZE(f_type),                                      \
+        .itemCount = (mode),                                                    \
+        .offset = offsetof(_type, _member),                                     \
         .calls = (_calls)}
 #endif
 
@@ -140,8 +183,9 @@ extern "C"
     typedef enum
     {
         FIELD_FLAG_NONE = 0x00,
-        FIELD_FLAG_BIG_ENDIAN = 0x01,    // 强制大端序
-        FIELD_FLAG_LITTLE_ENDIAN = 0x02, // 强制小端序
+        FIELD_FLAG_BIG_ENDIAN = 0x01,       // 强制大端序
+        FIELD_FLAG_LITTLE_ENDIAN = 0x02,    // 强制小端序
+        FIELD_FLAG_ZERO_COPY = 0x04,        // 零拷贝模式：直接传递源缓冲区指针，不进行 memcpy
         // ... 更多标志
     } field_flag_t;
 

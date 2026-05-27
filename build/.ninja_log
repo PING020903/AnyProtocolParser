@@ -1,4 +1,4 @@
 # ninja log v7
-30	362	8005805346010028	CMakeFiles/outputFile.dir/sources/AnyProtocolParser.c.obj	be5d698415b22d77
-43	372	8005805346137155	CMakeFiles/outputFile.dir/sources/main.c.obj	30420522e5496845
-373	678	8005805349428918	bin/outputFile.exe	6f521ddc35700130
+26	343	8015942340698528	CMakeFiles/outputFile.dir/sources/AnyProtocolParser.c.obj	be5d698415b22d77
+38	364	8015942340819829	CMakeFiles/outputFile.dir/sources/main.c.obj	30420522e5496845
+364	694	8015942344078133	bin/outputFile.exe	6f521ddc35700130

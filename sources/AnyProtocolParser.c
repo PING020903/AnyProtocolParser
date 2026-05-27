@@ -181,7 +181,25 @@ static protocol_err_t parse_single_field(parsing_user_data_t *user,
     if (!field->calls)
         return PROTOCOL_OK;
 
-    // 计算实际的元素个数（处理变长字段）
+    // 检查是否启用零拷贝模式
+    int is_zero_copy = (field->flags & FIELD_FLAG_ZERO_COPY) != 0;
+
+    if (is_zero_copy)
+    {
+        // 零拷贝模式：直接传递源缓冲区指针
+        // 注意：用户需要确保在回调中不修改数据，且原始缓冲区在回调期间保持有效
+        if (field->calls->on_parse_callback)
+        {
+            protocol_err_t ret = field->calls->on_parse_callback(user, &raw_view);
+            if (ret != PROTOCOL_OK)
+            {
+                return ret; // 支持用户返回 PROTOCOL_ERR_PASSMSG 提前终止
+            }
+        }
+        return PROTOCOL_OK;
+    }
+
+    // 拷贝模式：计算实际的元素个数（处理变长字段）
     size_t actual_item_count = 0;
     size_t field_byte_size = calculate_field_size(field, user);
 

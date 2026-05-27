@@ -37,6 +37,7 @@ static void *parser_calloc(size_t itemCnt, size_t itemSize);
 static void *parser_realloc(void *pBlock, size_t bytes);
 static void parser_free(void *pBlock);
 static protocol_err_t field_call(parsing_user_data_t *_user, const parsing_raw_data_t *_raw);
+static protocol_err_t zero_copy_field_call(parsing_user_data_t *_user, const parsing_raw_data_t *_raw);
 static protocol_err_t tlv_len_callback(parsing_user_data_t *_user, const parsing_raw_data_t *_raw);
 static protocol_err_t ltv_len_callback(parsing_user_data_t *_user, const parsing_raw_data_t *_raw);
 
@@ -52,6 +53,12 @@ static const protocol_field_calls_t field_calls = {
     .on_serialize_callback = NULL,
 };
 
+// 零拷贝回调配置
+static const protocol_field_calls_t zero_copy_field_calls = {
+    .on_parse_callback = zero_copy_field_call,
+    .on_serialize_callback = NULL,
+};
+
 // TLV 长度字段的特殊回调：将长度值存入 user->uDataSize
 static const protocol_field_calls_t tlv_len_calls = {
     .on_parse_callback = tlv_len_callback,
@@ -64,6 +71,15 @@ const protocol_field_descriptor_t feilds_fixed[] = {
     FIELD_DESC_FIXED(test_t, uuu8, FIELD_TYPE_UINT8, &field_calls),
     FIELD_DESC_FIXED(test_t, uuuptr, FIELD_TYPE_POINT, &field_calls),
     FIELD_DESC_FIXED(test_t, uuu8_arr, FIELD_TYPE_ARRARY, &field_calls),
+};
+
+// 使用零拷贝标志的字段描述符示例
+const protocol_field_descriptor_t feilds_zero_copy[] = {
+    FIELD_DESC_FIXED_WITH_FLAGS(test_t, uuu16, FIELD_TYPE_UINT16, FIELD_FLAG_ZERO_COPY, &zero_copy_field_calls),
+    FIELD_DESC_FIXED_WITH_FLAGS(test_t, uuu32, FIELD_TYPE_UINT32, FIELD_FLAG_ZERO_COPY, &zero_copy_field_calls),
+    FIELD_DESC_FIXED_WITH_FLAGS(test_t, uuu8, FIELD_TYPE_UINT8, FIELD_FLAG_NONE, &field_calls),  // 混合使用：这个字段仍然拷贝
+    FIELD_DESC_FIXED_WITH_FLAGS(test_t, uuuptr, FIELD_TYPE_POINT, FIELD_FLAG_ZERO_COPY, &zero_copy_field_calls),
+    FIELD_DESC_FIXED_WITH_FLAGS(test_t, uuu8_arr, FIELD_TYPE_ARRARY, FIELD_FLAG_ZERO_COPY, &zero_copy_field_calls),
 };
 
 const protocol_field_descriptor_t feilds_var[] = {
@@ -114,6 +130,16 @@ const protocol_message_descriptor_t msg_desc_ltv = {
     .on_message_end_callback = NULL,
 };
 
+// 零拷贝消息描述符
+const protocol_message_descriptor_t msg_desc_zero_copy = {
+    .name = "test_zero_copy_message",
+    .fields = feilds_zero_copy,
+    .num_fields = FIELD_ARR_SIZE(feilds_zero_copy),
+    .total_size = sizeof(test_t),
+    .on_message_start_callback = NULL,
+    .on_message_end_callback = NULL,
+};
+
 int main(void)
 {
     DEBUG_PRINT("=== Starting protocol parser test ===");
@@ -138,7 +164,7 @@ int main(void)
     
     // ========== 测试 2: TLV 不定长消息 ==========
     DEBUG_PRINT("\n--- Test 2: TLV variable-length message ---");
-    DEBUG_PRINT("TLV raw data (len=%d):", sizeof(tlv_data));
+    DEBUG_PRINT("TLV raw data (len=%d):", (int)sizeof(tlv_data));
     VAR_PRINT_ARR_HEX(tlv_data, sizeof(tlv_data));
     
     // TLV 结构：typeNum(1字节) + len(1字节) + data(len字节)
@@ -149,7 +175,7 @@ int main(void)
     
     // ========== 测试 3: LTV 不定长消息 ==========
     DEBUG_PRINT("\n--- Test 3: LTV variable-length message ---");
-    DEBUG_PRINT("LTV raw data (len=%d):", sizeof(ltv_data));
+    DEBUG_PRINT("LTV raw data (len=%d):", (int)sizeof(ltv_data));
     VAR_PRINT_ARR_HEX(ltv_data, sizeof(ltv_data));
     
     // LTV 结构：len(1字节) + typeNum(1字节) + data(len字节)
@@ -157,6 +183,22 @@ int main(void)
     parsing_user_data_t user_data_ltv = {NULL, 0};
     ret = app_parse_message(&user_data_ltv, &msg_desc_ltv, ltv_data);
     DEBUG_PRINT("LTV parse result: %d", ret);
+    
+    // ========== 测试 4: 零拷贝模式 ==========
+    DEBUG_PRINT("\n--- Test 4: Zero-copy mode (no memcpy) ---");
+    test_t RAW_DATA_ZC = {
+        .uuu16 = 0xABCD,
+        .uuu32 = 0xDEADBEEF,
+        .uuu8 = 0xFF,
+        .uuuptr = NULL,
+        .uuu8_arr = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00},
+    };
+    const uint8_t *pRawZeroCopy = (const uint8_t *)&RAW_DATA_ZC;
+    
+    parsing_user_data_t user_data_zc = {NULL, 0};
+    ret = app_parse_message(&user_data_zc, &msg_desc_zero_copy, pRawZeroCopy);
+    DEBUG_PRINT("Zero-copy parse result: %d", ret);
+    DEBUG_PRINT("Note: In zero-copy mode, callbacks receive direct pointers to source buffer (no allocation/copy)");
     
     return 0;
 }
@@ -184,6 +226,19 @@ static void parser_free(void *pBlock)
 static protocol_err_t field_call(parsing_user_data_t *_user, const parsing_raw_data_t *_raw){
     DEBUG_PRINT("Field callback: size=%zu", _raw->streamSize);
     VAR_PRINT_ARR_HEX((uint8_t*)_raw->rawStream, _raw->streamSize);
+    return PROTOCOL_OK;
+}
+
+/**
+ * @brief 零拷贝字段的回调示例
+ * @note 在零拷贝模式下，_raw->rawStream 直接指向原始缓冲区，用户不应修改数据
+ */
+static protocol_err_t zero_copy_field_call(parsing_user_data_t *_user, const parsing_raw_data_t *_raw){
+    DEBUG_PRINT("[Zero-Copy] Field callback: size=%zu (direct pointer to source buffer)", _raw->streamSize);
+    VAR_PRINT_ARR_HEX((uint8_t*)_raw->rawStream, _raw->streamSize);
+    
+    // 注意：在零拷贝模式下，不应该修改 _raw->rawStream 指向的数据
+    // 如果需要修改，应该先拷贝到自己的缓冲区
     return PROTOCOL_OK;
 }
 
