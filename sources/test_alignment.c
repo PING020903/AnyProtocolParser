@@ -1,6 +1,5 @@
 #include "DBG_macro.h"
 #include "AnyProtocolParser.h"
-#include <stdio.h>
 #include <string.h>
 
 /**
