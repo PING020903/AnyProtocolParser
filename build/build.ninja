@@ -69,6 +69,16 @@ build CMakeFiles/outputFile.dir/sources/main.c.obj: C_COMPILER__outputFile_unsca
   TARGET_COMPILE_PDB = CMakeFiles\outputFile.dir\
   TARGET_PDB = bin\outputFile.pdb
 
+build CMakeFiles/outputFile.dir/sources/test_alignment.c.obj: C_COMPILER__outputFile_unscanned_Debug F$:/cmake_study/AnyProtocolParser/sources/test_alignment.c || cmake_object_order_depends_target_outputFile
+  CONFIG = Debug
+  DEP_FILE = CMakeFiles\outputFile.dir\sources\test_alignment.c.obj.d
+  FLAGS = -g -std=gnu99
+  INCLUDES = -IF:/cmake_study/AnyProtocolParser/include
+  OBJECT_DIR = CMakeFiles\outputFile.dir
+  OBJECT_FILE_DIR = CMakeFiles\outputFile.dir\sources
+  TARGET_COMPILE_PDB = CMakeFiles\outputFile.dir\
+  TARGET_PDB = bin\outputFile.pdb
+
 
 # =============================================================================
 # Link build statements for EXECUTABLE target outputFile
@@ -77,7 +87,7 @@ build CMakeFiles/outputFile.dir/sources/main.c.obj: C_COMPILER__outputFile_unsca
 #############################################
 # Link the executable bin\outputFile.exe
 
-build bin/outputFile.exe: C_EXECUTABLE_LINKER__outputFile_Debug CMakeFiles/outputFile.dir/sources/AnyProtocolParser.c.obj CMakeFiles/outputFile.dir/sources/main.c.obj
+build bin/outputFile.exe: C_EXECUTABLE_LINKER__outputFile_Debug CMakeFiles/outputFile.dir/sources/AnyProtocolParser.c.obj CMakeFiles/outputFile.dir/sources/main.c.obj CMakeFiles/outputFile.dir/sources/test_alignment.c.obj
   CONFIG = Debug
   FLAGS = -g
   LINK_LIBRARIES = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32

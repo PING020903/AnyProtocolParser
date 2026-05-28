@@ -266,34 +266,74 @@ extern "C"
     } app_parser_instance_t;
 
     // 单个字段的描述符
+    // 优化说明：
+    // 1. 移除位域（bitfield），改用完整 uint8_t，避免嵌入式编译器兼容性问题
+    // 2. 调整字段顺序：指针 -> 整数 -> 小类型，减少 padding
+    // 3. RISC-V32/ARM32 内存布局（4字节对齐）：
+    //    [0-3]   name (4 bytes pointer)
+    //    [4-7]   calls (4 bytes pointer)
+    //    [8-9]   offset (2 bytes)
+    //    [10-11] itemSize (2 bytes)
+    //    [12-13] itemCount (2 bytes)
+    //    [14]    type (1 byte)
+    //    [15]    flags (1 byte)
+    //    总计：16 字节，无填充
     APP_PACKED_STRUCT(protocol_field_descriptor_s)
     {
-        const char *name;                  // 字段名称（用于调试、回调标识）
-        field_type_t type : APP_MAX_BITS;  // 字段类型
-        field_flag_t flags : APP_MAX_BITS; // 字段标志
-        uint16_t offset;                   // 在目标结构体中的偏移量 (使用固定宽度确保跨平台一致)
-        int16_t itemSize;                  // 字段元素大小
-        int16_t itemCount;                 // 字段大小: >0 为定长; -1 遇结束符; -2 关联前一字段长度; -3 剩余全部
-
-        // 可选：回调函数配置指针
-        const protocol_field_calls_t *calls;
+        const char *name;                          // 字段名称（用于调试、回调标识）- 4字节指针
+        const protocol_field_calls_t *calls;       // 回调函数配置指针 - 4字节指针
+        uint16_t offset;                           // 在目标结构体中的偏移量 - 2字节
+        int16_t itemSize;                          // 字段元素大小 - 2字节
+        int16_t itemCount;                         // 字段大小: >0 为定长; -1 遇结束符; -2 关联前一字段长度; -3 剩余全部 - 2字节
+        uint8_t type;                              // 字段类型枚举值 - 1字节（替代位域）
+        uint8_t flags;                             // 字段标志 - 1字节（替代位域）
     }
     APP_PACKED_END(protocol_field_descriptor_s);
 
     // 整个消息的描述符
+    // 优化说明：
+    // 1. 调整字段顺序：指针 -> 整数，减少 padding
+    // 2. RISC-V32/ARM32 内存布局（4字节对齐）：
+    //    [0-3]   name (4 bytes pointer)
+    //    [4-7]   fields (4 bytes pointer)
+    //    [8-11]  on_message_start_callback (4 bytes function pointer)
+    //    [12-15] on_message_end_callback (4 bytes function pointer)
+    //    [16-17] num_fields (2 bytes)
+    //    [18-21] total_size (4 bytes)
+    //    总计：22 字节（packed 无填充）
     APP_PACKED_STRUCT(protocol_message_descriptor_s)
     {
-        const char *name;                          // 消息名称
-        const protocol_field_descriptor_t *fields; // 指向字段描述符数组的指针
-        uint16_t num_fields;                       // 字段数量
-        int32_t total_size;                        // 消息总大小 (如果所有字段大小已知且固定)
-
-        // 可选：消息级别的回调
-        // 例如，在整个消息解析开始前、结束后调用
-        field_callback_t on_message_start_callback;
-        field_callback_t on_message_end_callback;
+        const char *name;                          // 消息名称 - 4字节指针
+        const protocol_field_descriptor_t *fields; // 指向字段描述符数组的指针 - 4字节
+        field_callback_t on_message_start_callback; // 消息开始回调 - 4字节函数指针
+        field_callback_t on_message_end_callback;   // 消息结束回调 - 4字节函数指针
+        uint16_t num_fields;                       // 字段数量 - 2字节
+        int32_t total_size;                        // 消息总大小 (如果所有字段大小已知且固定) - 4字节
     }
     APP_PACKED_END(protocol_message_descriptor_s);
+
+    // 编译时断言：验证结构体大小和字段偏移（嵌入式平台关键）
+    // protocol_field_descriptor_t: 
+    //   - 32-bit: 16 bytes (4+4+2+2+2+1+1)
+    //   - 64-bit: 24 bytes (8+8+2+2+2+1+1)
+    // protocol_message_descriptor_t:
+    //   - 32-bit: 22 bytes (4+4+4+4+2+4)
+    //   - 64-bit: 38 bytes (8+8+8+8+2+4)
+    #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+        #if defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__)
+            // 64-bit 平台
+            _Static_assert(sizeof(protocol_field_descriptor_t) == 24, 
+                           "protocol_field_descriptor_t size must be 24 bytes on 64-bit platforms");
+            _Static_assert(sizeof(protocol_message_descriptor_t) == 38, 
+                           "protocol_message_descriptor_t size must be 38 bytes on 64-bit platforms");
+        #else
+            // 32-bit 平台 (RISC-V32, ARM32, x86)
+            _Static_assert(sizeof(protocol_field_descriptor_t) == 16, 
+                           "protocol_field_descriptor_t size must be 16 bytes on 32-bit platforms");
+            _Static_assert(sizeof(protocol_message_descriptor_t) == 22, 
+                           "protocol_message_descriptor_t size must be 22 bytes on 32-bit platforms");
+        #endif
+    #endif
 
     static const size_t appField_tSize = sizeof(protocol_field_descriptor_t);
     static const size_t appMsg_tSize = sizeof(protocol_message_descriptor_t);

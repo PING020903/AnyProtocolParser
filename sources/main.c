@@ -2,6 +2,9 @@
 #include "AnyProtocolParser.h"
 #include <stdlib.h>
 
+// 前置声明：嵌入式平台对齐测试函数
+extern int test_embedded_alignment(void);
+
 char __DBG_string[DBG_DEFAULT_BUFFER_LEN] = {0};
 
 static uint8_t tlv_data[] = {0x0a, 0x08, 0x02, 0x04, 0x08, 0x01, 0x01, 0x02, 0x04, 0x08};
@@ -142,7 +145,13 @@ const protocol_message_descriptor_t msg_desc_zero_copy = {
 
 int main(void)
 {
-    DEBUG_PRINT("=== Starting protocol parser test ===");
+    // ========== 首先运行嵌入式平台对齐测试 ==========
+    int align_test_result = test_embedded_alignment();
+    if (align_test_result != 0) {
+        DEBUG_PRINT("\n[WARNING] Alignment tests failed! Continuing with other tests...\n");
+    }
+    
+    DEBUG_PRINT("\n=== Starting protocol parser functional tests ===");
     
     // 初始化内存管理回调
     app_memCall_init(&memCalls);
@@ -294,7 +303,7 @@ static void parser_free(void *pBlock)
 }
 
 static protocol_err_t field_call(parsing_user_data_t *_user, const parsing_raw_data_t *_raw){
-    DEBUG_PRINT("Field callback: size=%zu", _raw->streamSize);
+    DEBUG_PRINT("Field callback: size=%u", (unsigned int)_raw->streamSize);
     VAR_PRINT_ARR_HEX((uint8_t*)_raw->rawStream, _raw->streamSize);
     return PROTOCOL_OK;
 }
@@ -304,7 +313,7 @@ static protocol_err_t field_call(parsing_user_data_t *_user, const parsing_raw_d
  * @note 在零拷贝模式下，_raw->rawStream 直接指向原始缓冲区，用户不应修改数据
  */
 static protocol_err_t zero_copy_field_call(parsing_user_data_t *_user, const parsing_raw_data_t *_raw){
-    DEBUG_PRINT("[Zero-Copy] Field callback: size=%zu (direct pointer to source buffer)", _raw->streamSize);
+    DEBUG_PRINT("[Zero-Copy] Field callback: size=%u (direct pointer to source buffer)", (unsigned int)_raw->streamSize);
     VAR_PRINT_ARR_HEX((uint8_t*)_raw->rawStream, _raw->streamSize);
     
     // 注意：在零拷贝模式下，不应该修改 _raw->rawStream 指向的数据
@@ -350,8 +359,8 @@ static protocol_err_t ltv_len_callback(parsing_user_data_t *_user, const parsing
         _user->uDataSize = 0;  // 长度为 0 或 1 时，没有 payload
     }
     
-    DEBUG_PRINT("LTV length field: total_len=%u, payload_len=%zu (saved to user->uDataSize)", 
-                total_len, _user->uDataSize);
+    DEBUG_PRINT("LTV length field: total_len=%u, payload_len=%u (saved to user->uDataSize)", 
+                total_len, (unsigned int)_user->uDataSize);
     
     return PROTOCOL_OK;
 }

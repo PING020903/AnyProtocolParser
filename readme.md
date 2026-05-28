@@ -130,25 +130,34 @@ app_parser_deinit(&parser);
 ```c
 // 字段描述符
 typedef struct {
-    const char *name;                  // 字段名称
-    field_type_t type;                 // 字段类型 (UINT8, UINT16, etc.)
-    field_flag_t flags;                // 字段标志 (字节序等)
-    uint16_t offset;                   // 在结构体中的偏移量
-    int16_t itemSize;                  // 元素大小
-    int16_t itemCount;                 // 元素个数 (>0:定长, <0:变长)
-    const protocol_field_calls_t *calls; // 回调函数配置
+    const char *name;                          // 字段名称
+    const protocol_field_calls_t *calls;       // 回调函数配置指针
+    uint16_t offset;                           // 在结构体中的偏移量
+    int16_t itemSize;                          // 元素大小
+    int16_t itemCount;                         // 元素个数 (>0:定长, <0:变长)
+    uint8_t type;                              // 字段类型枚举值
+    uint8_t flags;                             // 字段标志位
 } protocol_field_descriptor_t;
 
 // 消息描述符
 typedef struct {
     const char *name;                          // 消息名称
     const protocol_field_descriptor_t *fields; // 字段数组
-    uint16_t num_fields;                       // 字段数量
-    int32_t total_size;                        // 消息总大小
     field_callback_t on_message_start_callback;  // 消息开始回调
     field_callback_t on_message_end_callback;    // 消息结束回调
+    uint16_t num_fields;                       // 字段数量
+    int32_t total_size;                        // 消息总大小
 } protocol_message_descriptor_t;
 ```
+
+**嵌入式平台优化：**
+- ✅ **移除位域**：使用完整 `uint8_t` 替代位域，避免 RISC-V32/ARM32 编译器兼容性问题
+- ✅ **字段顺序优化**：指针 → 整数 → 小类型，减少 padding
+- ✅ **跨平台 packed**：支持 GCC/Clang (`__attribute__((packed))`) 和 MSVC (`#pragma pack(1)`)
+- ✅ **内存布局保证**：
+  - 32-bit 平台：`protocol_field_descriptor_t` = 16 字节，`protocol_message_descriptor_t` = 22 字节
+  - 64-bit 平台：`protocol_field_descriptor_t` = 24 字节，`protocol_message_descriptor_t` = 38 字节
+- ✅ **编译时断言**：自动验证结构体大小，确保跨平台一致性
 
 ### 4. 抽象与分层 (Abstraction & Layering)
 将解析过程分为几个层次：
@@ -205,6 +214,106 @@ typedef struct {
 
 传统的C语言解析器通常是硬编码的，一旦协议变更就需要修改源码并重新编译。而许多现代高级语言（如Python, Go）凭借其动态特性（如反射、动态数据结构）能更容易地实现类似的自适应解析。本设计试图在C语言严格的静态特性和性能要求下，通过巧妙的数据结构设计（规则表、模板）和状态机逻辑，模拟出高级语言的部分灵活性，从而弥合“C语言的性能”与“现代解析需求的灵活性”之间的鸿沟。
 
+## 重要说明
+
+### 嵌入式平台 Printf 格式兼容性
+
+**本项目所有 printf 格式符已针对嵌入式环境优化！**
+
+- ✅ 使用 `%u` 替代 `%zu`（size_t 格式符）
+- ✅ 所有 `sizeof()` 和 `offsetof()` 结果都转换为 `(unsigned int)`
+- ✅ 兼容简化 C 标准库的嵌入式环境（RISC-V32、ARM32 等）
+
+示例：
+```c
+// 正确做法（嵌入式兼容）
+printf("Size: %u\n", (unsigned int)sizeof(my_struct));
+printf("Offset: %u\n", (unsigned int)offsetof(my_struct, field));
+
+// 避免使用（某些嵌入式环境不支持）
+printf("Size: %zu\n", sizeof(my_struct));  // ❌
+```
+
+---
+
+### 字节序处理
+
+**本协议解析器不进行字节序转换！**
+
+- 解析器将原始数据从源缓冲区拷贝到安全的堆内存后，直接传递给用户回调
+- 数据的字节序（大端/小端）在通讯双方必须预先协定
+- 如需字节序转换，请在用户回调中自行处理
+
+示例：
+```c
+static protocol_err_t field_callback(parsing_user_data_t *_user, 
+                                      const parsing_raw_data_t *_raw) {
+    // 假设协议约定为大端序，而主机为小端序
+    uint16_t value = *(uint16_t*)_raw->rawStream;
+    value = __builtin_bswap16(value);  // 字节序转换
+    // 使用转换后的值
+    return PROTOCOL_OK;
+}
+```
+
+### 缓冲区安全
+
+**调用者必须确保传入的原始数据缓冲区足够大，能够容纳完整的报文！**
+
+- 解析器会根据 `msg_desc->total_size` 或字段定义访问缓冲区中的数据
+- 如果缓冲区长度小于报文实际长度，会导致**缓冲区溢出**和**未定义行为**
+- 对于变长报文，建议在调用解析前先验证缓冲区长度
+
+示例：
+```c
+// 错误做法：缓冲区可能不完整
+uint8_t partial_buffer[10];  // 只接收到部分数据
+app_parse_message_ex(&parser, &user, &msg_desc, partial_buffer);  // 危险！
+
+// 正确做法：确保缓冲区完整
+if (received_length >= msg_desc->total_size) {
+    app_parse_message_ex(&parser, &user, &msg_desc, complete_buffer);
+} else {
+    // 等待更多数据到达
+}
+```
+
+### 内存管理
+
+- **拷贝模式**（默认）：解析器会为每个字段分配堆内存并拷贝数据，确保数据不会被后续接收的新数据覆盖
+- **零拷贝模式**：直接传递源缓冲区指针，用户需保证源数据在回调期间有效且不修改数据
+
+### 重入安全性
+
+- 旧版 API (`app_parse_message`) 使用全局变量，不支持并发
+- 新版 API (`app_parse_message_ex`) 支持多实例并发，推荐使用
+
+```c
+app_parser_instance_t parser;
+app_parser_init(&parser, &memCalls);
+app_parse_message_ex(&parser, &user, &msg_desc, raw_data);
+app_parser_deinit(&parser);
+```
+
+### CRC 校验
+
+```c
+// 配置 CRC-32
+app_crc_config_t crc_cfg = {
+    .calc_crc = NULL,      // 使用默认 CRC-32
+    .crc_offset = 0,       // CRC 起始位置
+    .crc_size = 4          // CRC 占 4 字节
+};
+app_parser_set_crc_config(&parser, &crc_cfg);
+app_parser_enable_crc(&parser, true);
+
+// 解析时自动校验 CRC
+protocol_err_t ret = app_parse_message_ex(&parser, &user, &msg_desc, data);
+if (ret == PROTOCOL_ERR_CRC) {
+    // CRC 校验失败，处理错误
+}
+```
+
 ## 完整使用示例
 
 ### 示例 1：定长协议（旧版 API - 简单场景）
@@ -227,7 +336,7 @@ typedef struct {
 static protocol_err_t field_callback(parsing_user_data_t *_user, 
                                      const parsing_raw_data_t *_raw) {
     // 处理字段数据（_raw->rawStream 指向堆内存中的安全副本）
-    printf("Field size: %zu\n", _raw->streamSize);
+    printf("Field size: %u\n", (unsigned int)_raw->streamSize);
     return PROTOCOL_OK;
 }
 
@@ -430,7 +539,7 @@ static protocol_err_t zero_copy_callback(parsing_user_data_t *_user,
                                          const parsing_raw_data_t *_raw) {
     // 注意：_raw->rawStream 直接指向原始缓冲区
     // 不应修改数据，且需确保缓冲区在回调期间有效
-    printf("[Zero-Copy] Field size: %zu\n", _raw->streamSize);
+    printf("[Zero-Copy] Field size: %u\n", (unsigned int)_raw->streamSize);
     return PROTOCOL_OK;
 }
 
@@ -825,6 +934,16 @@ gcc -I include -I thirdparty/c-linked-list-main/src/linkedlist `
 
 项目包含完整的测试用例，覆盖以下场景：
 
+### 1. 嵌入式平台内存对齐测试（新增）
+验证结构体在 RISC-V32/ARM32 等嵌入式平台的兼容性：
+- ✅ 结构体大小验证（32-bit: 16/22 字节，64-bit: 24/38 字节）
+- ✅ 字段偏移量检查（无编译器自动填充 padding）
+- ✅ 枚举值存储测试（`uint8_t` 类型兼容）
+- ✅ 非对齐指针访问测试
+- ✅ 数组布局连续性验证
+- ✅ 跨平台一致性检查
+
+### 2. 功能测试
 1. **定长消息解析**：测试基本字段类型（UINT8/16/32/64、指针、数组）
 2. **TLV 不定长消息**：Type-Length-Value 格式，长度表示 payload 大小
 3. **LTV 不定长消息**：Length-Type-Value 格式，长度包含 type 字段
@@ -835,48 +954,42 @@ gcc -I include -I thirdparty/c-linked-list-main/src/linkedlist `
 运行测试：
 
 ```bash
-./build/test.exe
+./build/bin/outputFile.exe
 ```
 
 预期输出示例：
 
 ```
-=== Starting protocol parser test ===
+========================================
+  Embedded Platform Alignment Tests
+  Target: RISC-V32 / ARM32
+========================================
+=== Structure Layout Information ===
+Platform: 64-bit (pointer size = 8 bytes)
 
---- Test 1: Fixed-length message (legacy API) ---
-[Field callback outputs...]
-Fixed parse result: 0
+--- protocol_field_descriptor_t ---
+Total size: 24 bytes (expected: 24 for 64-bit)
+  name:    offset=0, size=8
+  calls:   offset=8, size=8
+  ...
 
---- Test 2: TLV variable-length message (legacy API) ---
-TLV raw data (len=10):
-        [a] [8] [2] [4] [8] [1] [1] [2] [4] [8]
-TLV length field: value=8 (saved to user->uDataSize)
-[Field callback outputs...]
-TLV parse result: 0
+=== Test 1: Structure Size Verification ===
+[PASS] protocol_field_descriptor_t size is 24 bytes (64-bit platform)
+[PASS] protocol_message_descriptor_t size is 38 bytes (64-bit platform)
 
---- Test 3: LTV variable-length message (legacy API) ---
-LTV raw data (len=11):
-        [a] [1] [8] [2] [4] [8] [1] [1] [2] [4] [8]
-LTV length field: total_len=10, payload_len=9 (saved to user->uDataSize)
-[Field callback outputs...]
-LTV parse result: 0
+=== Test 2: Field Offset Verification (No Padding) ===
+[PASS] All field offsets are correct (no padding detected on 64-bit platform)
 
---- Test 4: Zero-copy mode (legacy API) ---
-[Zero-Copy] Field callback outputs...
-Zero-copy parse result: 0
+...
 
---- Test 5: Reentrant API (without CRC) ---
-Reentrant parse result: 0
+========================================
+  Test Summary: 6/6 passed
+========================================
+[SUCCESS] All alignment tests passed!
+Structure design is compatible with RISC-V32/ARM32.
 
---- Test 6: Reentrant API with CRC verification (failure case) ---
-CRC verification failed as expected (error code: 8 = PROTOCOL_ERR_CRC)
-User can handle CRC error here (e.g., request retransmission)
-
---- Test 7: Multiple concurrent parser instances ---
-Parser A result: 0
-Parser B result: 0
-
-=== All tests completed ===
+=== Starting protocol parser functional tests ===
+...
 ```
 
 ## 项目结构
@@ -1005,13 +1118,21 @@ app_crc_config_t crc_cfg = {
 
 ---
 
-**版本**: 2.0  
+**版本**: 2.1  
 **最后更新**: 2026-05-28
 
-**主要更新：**
+**v2.1 主要更新（嵌入式平台优化）：**
+- ✅ 移除位域设计，改用完整 `uint8_t` 类型，避免 RISC-V32/ARM32 编译器兼容性问题
+- ✅ 优化结构体字段顺序（指针 → 整数 → 小类型），减少 padding
+- ✅ 添加跨平台 packed 宏定义（支持 GCC/Clang/MSVC）
+- ✅ 添加编译时断言，自动验证结构体大小
+- ✅ 新增嵌入式平台内存对齐测试套件（6 项测试）
+- ✅ 完善文档说明嵌入式平台兼容性保证
+
+**v2.0 主要更新：**
 - ✅ 新增零拷贝模式（`FIELD_FLAG_ZERO_COPY`）
 - ✅ 新增 CRC 校验支持（内置 CRC-32 + 自定义算法）
 - ✅ 新增重入安全 API（`app_parser_instance_t` + `app_parse_message_ex`）
 - ✅ 新增带标志位的字段描述符宏（`FIELD_DESC_FIXED_WITH_FLAGS` / `FIELD_DESC_VAR_WITH_FLAGS`）
 - ✅ 改进内存管理和线程安全性
-- ✅ 完善测试用例（7 个测试场景）
+- ✅ 完善测试用例（7 个功能测试场景）
